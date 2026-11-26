@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShopClock</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#12263a">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{--bg:#eef1f4;--card:#fff;--tx:#12263a;--mut:#5d6f80;--bd:#d3dae1;--pri:#12263a;--onpri:#fff;--acc:#f2b705;--bad:#b42318;--ok:#067647}
+@media(prefers-color-scheme:dark){:root{--bg:#0b141d;--card:#142230;--tx:#e6edf3;--mut:#92a4b5;--bd:#25384a;--pri:#f2b705;--onpri:#12263a;--acc:#f2b705;--bad:#f97066;--ok:#47cd89}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--card);border-bottom:2px solid var(--acc);position:sticky;top:0;z-index:5}
+header h1{margin:0;font-size:1.15rem;letter-spacing:.2px;flex:1}
+main{max-width:760px;margin:0 auto;padding:16px}
+h2{margin:8px 0 12px;font-size:1.3rem}h3{margin:20px 0 8px;font-size:1.05rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px}
+button{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:9px 14px}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--acc);outline-offset:1px}
+button.p{background:var(--pri);color:var(--onpri);border-color:var(--pri);font-weight:600}
+button.d{color:var(--bad)}button.s{padding:5px 9px;font-size:.85rem}
+.big{display:block;width:100%;padding:26px 16px;font-size:1.25rem;font-weight:700;text-align:left;margin-bottom:12px;border-radius:12px}
+.big small{display:block;font-weight:400;font-size:.9rem;opacity:.8;margin-top:4px}
+input,select{font:inherit;width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx)}
+label{display:block;font-size:.85rem;color:var(--mut);margin:10px 0 4px}
+.row{display:flex;gap:8px;align-items:end}.row>*{flex:1}.row>button{flex:none}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px}
+.tabs button{white-space:nowrap}.tabs button.on{background:var(--pri);color:var(--onpri);border-color:var(--pri)}
+.emp{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
+.mut{color:var(--mut);font-size:.9rem}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.res{font-size:1.1rem;min-height:3em}.res b{font-size:1.4rem;display:block}
+.sc{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--bd);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}tfoot td{font-weight:700;border-top:2px solid var(--tx)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--ok);margin-right:6px}
+@media print{header,.tabs,.noprint{display:none}body{background:#fff;color:#000}}
+</style></head><body>
+<header><button id="back" class="s" onclick="go('home')" hidden>← Back</button><h1>ShopClock</h1></header>
+<main id="v"></main>
+<script>
+const $=s=>document.querySelector(s),K='shopclock_v1';
+let S=JSON.parse(localStorage.getItem(K)||'null')||{pin:'1234',cur:'₹',emps:[],punches:[],extra:[]};
+const save=()=>localStorage.setItem(K,JSON.stringify(S));
+const uid=()=>Math.random().toString(36).slice(2,10);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=n=>S.cur+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const fT=t=>new Date(t).toLocaleString([],{dateStyle:'medium',timeStyle:'short'});
+const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+const mk=t=>{const d=new Date(t);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')};
+let view='home',tab='emps',month=today().slice(0,7),authed=false,ac=null;
+
+// ---- NFC ----
+const stopScan=()=>{if(ac){ac.abort();ac=null}};
+async function startScan(cb,msg){
+  if(!('NDEFReader' in window)){msg('NFC not available. Use Chrome on an Android phone with NFC on, over HTTPS.','bad');return false}
+  try{
+    stopScan();ac=new AbortController();
+    const r=new NDEFReader();await r.scan({signal:ac.signal});
+    r.onreading=e=>cb(e.serialNumber.toUpperCase());
+    r.onreadingerror=()=>msg('Could not read that tag. Try again.','bad');
+    return true;
+  }catch(e){msg('NFC error: '+e.message,'bad');return false}
+}
+
+// ---- data logic ----
+const lastPunch=id=>S.punches.filter(x=>x.emp===id).sort((a,b)=>b.t-a.t)[0];
+const isIn=id=>lastPunch(id)?.type==='in';
+function punch(emp){
+  const last=lastPunch(emp.id),now=Date.now();
+  if(last&&now-last.t<15000)return{dup:true};
+  const type=last&&last.type==='in'?'out':'in';
+  S.punches.push({id:uid(),emp:emp.id,type,t:now});save();
+  return{type,now,worked:type==='out'&&last?(now-last.t)/36e5:null};
+}
+function sessions(id){
+  const p=S.punches.filter(x=>x.emp===id).sort((a,b)=>a.t-b.t),o=[];let open=null;
+  for(const x of p){
+    if(x.type==='in'){if(open)o.push({i:open,o:null});open=x}
+    else if(open){o.push({i:open,o:x});open=null}
+  }
+  if(open)o.push({i:open,o:null});return o;
+}
+function monthData(ym){
+  return S.emps.map(e=>{
+    let shop=0,open=false;
+    sessions(e.id).forEach(s=>{if(mk(s.i.t)!==ym)return;if(s.o)shop+=(s.o.t-s.i.t)/36e5;else open=true});
+    const off=S.extra.filter(x=>x.emp===e.id&&x.date.slice(0,7)===ym).reduce((a,x)=>a+x.hours,0);
+    return{e,shop,off,open,total:shop+off,pay:(shop+off)*e.rate};
+  });
+}
+
+// ---- navigation ----
+function go(v){stopScan();view=v;render()}
+function render(){
+  $('#back').hidden=view==='home';
+  $('#v').innerHTML={home:vHome,emp:vEmp,login:vLogin,owner:vOwner}[view]();
+  if(view==='emp')whoNow();
+}
+const vHome=()=>`<button class="big p" onclick="go('emp')">Employee<small>Scan your tag to clock in or out</small></button>
+<button class="big" onclick="go(authed?'owner':'login')">Owner<small>Employees, extra hours and monthly pay</small></button>`;
+
+// ---- employee ----
+const vEmp=()=>`<h2>Clock in / out</h2>
+<button class="big p" onclick="empScan()">Tap here, then hold your tag to the back of the phone</button>
+<div class="card res" id="res" aria-live="polite"><span class="mut">Not scanning yet.</span></div>
+<h3>On shift now</h3><div class="card" id="who"></div>`;
+function whoNow(){
+  const l=S.emps.filter(e=>isIn(e.id));
+  $('#who').innerHTML=l.length?l.map(e=>`<div><span class="dot"></span>${esc(e.name)} <span class="mut">since ${fT(lastPunch(e.id).t)}</span></div>`).join(''):'<span class="mut">Nobody is clocked in.</span>';
+}
+const setRes=(h,c='')=>{const r=$('#res');if(r)r.innerHTML=`<span class="${c}">${h}</span>`};
+async function empScan(){
+  setRes('Starting…');
+  const ok=await startScan(tag=>{
+    const e=S.emps.find(x=>x.tag===tag);
+    if(!e){setRes(`<b>Tag not registered</b>Ask the owner to add it. ID: ${esc(tag)}`,'bad');return}
+    const r=punch(e);navigator.vibrate&&navigator.vibrate(150);
+    if(r.dup)setRes(`<b>${esc(e.name)}</b>Already scanned a moment ago.`,'mut');
+    else if(r.type==='in')setRes(`<b>${esc(e.name)}: clocked IN</b>${fT(r.now)}`,'ok');
+    else setRes(`<b>${esc(e.name)}: clocked OUT</b>${fT(r.now)}${r.worked!=null?`<br>This shift: ${r.worked.toFixed(2)} h`:''}`,'bad');
+    whoNow();
+  },setRes);
+  if(ok)setRes('Ready. Hold your tag near the phone…');
+}
+
+// ---- owner ----
+const vLogin=()=>`<h2>Owner PIN</h2><div class="card"><label for="pin">Enter PIN</label>
+<input id="pin" type="password" inputmode="numeric" autocomplete="off"><p id="pe" class="bad"></p>
+<button class="p" onclick="login()">Open owner section</button><p class="mut">Default PIN is 1234. Change it in Settings.</p></div>`;
+function login(){if($('#pin').value===S.pin){authed=true;go('owner')}else $('#pe').textContent='Wrong PIN.'}
+function vOwner(){
+  const T=[['emps','Employees'],['extra','Off-site hours'],['pay','Monthly pay'],['set','Settings']];
+  return `<div class="tabs">${T.map(([k,n])=>`<button class="${tab===k?'on':''}" onclick="tab='${k}';render()">${n}</button>`).join('')}</div>`+
+    {emps:tEmps,extra:tExtra,pay:tPay,set:tSet}[tab]();
+}
+const nm=id=>{const e=S.emps.find(x=>x.id===id);return e?esc(e.name):'(deleted)'};
+function tEmps(){
+  return `<div class="card"><h3 style="margin-top:0">Add employee</h3>
+<label for="en">Name</label><input id="en">
+<label for="er">Pay per hour (${esc(S.cur)})</label><input id="er" type="number" min="0" step="0.01" inputmode="decimal">
+<label for="et">Tag ID</label><div class="row"><input id="et" placeholder="Scan or type the tag ID"><button onclick="scanNew()">Scan tag</button></div>
+<p id="nm" class="mut"></p><button class="p" onclick="addEmp()">Add employee</button></div>
+<h3>Employees (${S.emps.length})</h3>`+
+  (S.emps.length?S.emps.map(e=>`<div class="card emp"><div><b>${esc(e.name)}</b> ${isIn(e.id)?'<span class="ok">● on shift</span>':''}<br><span class="mut">${money(e.rate)}/h · tag ${esc(e.tag||'none')}</span></div>
+<div><button class="s" onclick="manual('${e.id}')">${isIn(e.id)?'Clock out':'Clock in'}</button>
+<button class="s" onclick="editEmp('${e.id}')">Edit</button><button class="s" onclick="rescan('${e.id}')">New tag</button>
+<button class="s d" onclick="delEmp('${e.id}')">Delete</button></div></div>`).join(''):'<p class="mut">No employees yet. Add the first one above.</p>');
+}
+const nmsg=(t,c)=>{const m=$('#nm');if(m){m.textContent=t;m.className=c||'mut'}};
+async function scanNew(){
+  nmsg('Hold the tag near the phone…');
+  await startScan(tag=>{$('#et').value=tag;stopScan();nmsg('Tag captured.','ok')},nmsg);
+}
+function addEmp(){
+  const name=$('#en').value.trim(),rate=parseFloat($('#er').value),tag=$('#et').value.trim().toUpperCase();
+  if(!name||isNaN(rate)||rate<0)return nmsg('Enter a name and a valid hourly pay.','bad');
+  if(tag&&S.emps.some(e=>e.tag===tag))return nmsg('That tag already belongs to another employee.','bad');
+  S.emps.push({id:uid(),name,rate,tag});save();render();
+}
+function editEmp(id){
+  const e=S.emps.find(x=>x.id===id);
+  const n=prompt('Name',e.name);if(n===null)return;
+  const r=prompt('Pay per hour',e.rate);if(r===null)return;
+  if(n.trim())e.name=n.trim();if(!isNaN(parseFloat(r)))e.rate=parseFloat(r);save();render();
+}
+async function rescan(id){
+  alert('After you press OK, hold the new tag near the phone.');
+  await startScan(tag=>{
+    if(S.emps.some(e=>e.tag===tag&&e.id!==id))return alert('That tag belongs to another employee.');
+    S.emps.find(e=>e.id===id).tag=tag;save();stopScan();render();
+  },m=>alert(m));
+}
+function manual(id){punch(S.emps.find(e=>e.id===id));render()}
+function delEmp(id){
+  if(!confirm('Delete this employee and all their records?'))return;
+  S.emps=S.emps.filter(e=>e.id!==id);S.punches=S.punches.filter(p=>p.emp!==id);S.extra=S.extra.filter(x=>x.emp!==id);save();render();
+}
+function tExtra(){
+  const list=S.extra.filter(x=>x.date.slice(0,7)===month).sort((a,b)=>b.date.localeCompare(a.date));
+  return `<div class="card"><h3 style="margin-top:0">Add off-site hours</h3><p class="mut">For time worked away from the shop, such as deliveries or events.</p>
+<label for="xe">Employee</label><select id="xe">${S.emps.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
+<div class="row"><div><label for="xd">Date</label><input id="xd" type="date" value="${today()}"></div>
+<div><label for="xh">Hours</label><input id="xh" type="number" min="0" step="0.25" inputmode="decimal"></div></div>
+<label for="xn">Note (optional)</label><input id="xn" placeholder="e.g. Delivery to customer">
+<p id="xm" class="bad"></p><button class="p" onclick="addExtra()">Add hours</button></div>
+<h3>Entries in <input type="month" value="${month}" style="width:auto;display:inline-block" onchange="month=this.value;render()"></h3>`+
+  (list.length?list.map(x=>`<div class="card emp"><div><b>${nm(x.emp)}</b>: ${x.hours} h<br><span class="mut">${x.date}${x.note?' · '+esc(x.note):''}</span></div><button class="s d" onclick="delExtra('${x.id}')">Delete</button></div>`).join(''):'<p class="mut">No off-site hours this month.</p>');
+}
+function addExtra(){
+  const emp=$('#xe').value,date=$('#xd').value,hours=parseFloat($('#xh').value);
+  if(!emp||!date||isNaN(hours)||hours<=0)return $('#xm').textContent='Choose an employee, a date and hours above 0.';
+  S.extra.push({id:uid(),emp,date,hours,note:$('#xn').value.trim()});save();render();
+}
+function delExtra(id){S.extra=S.extra.filter(x=>x.id!==id);save();render()}
+function tPay(){
+  const d=monthData(month),T=d.reduce((a,r)=>({h:a.h+r.total,p:a.p+r.pay}),{h:0,p:0});
+  const shifts=[];S.emps.forEach(e=>sessions(e.id).forEach(s=>{if(mk(s.i.t)===month)shifts.push({e,...s})}));
+  shifts.sort((a,b)=>b.i.t-a.i.t);
+  return `<div class="row noprint"><div><label for="pm">Month</label><input id="pm" type="month" value="${month}" onchange="month=this.value;render()"></div><button onclick="print()">Print</button></div>
+<h3>Pay for ${month}</h3><div class="card sc"><table><thead><tr><th>Employee</th><th>Shop h</th><th>Off-site h</th><th>Total h</th><th>Rate</th><th>To pay</th></tr></thead><tbody>
+${d.map(r=>`<tr><td>${esc(r.e.name)}${r.open?' <span class="bad" title="Open shift not counted">⚠</span>':''}</td><td>${r.shop.toFixed(2)}</td><td>${r.off.toFixed(2)}</td><td>${r.total.toFixed(2)}</td><td>${money(r.e.rate)}</td><td><b>${money(r.pay)}</b></td></tr>`).join('')||'<tr><td colspan="6" class="mut">No employees yet.</td></tr>'}
+</tbody><tfoot><tr><td>Total</td><td></td><td></td><td>${T.h.toFixed(2)}</td><td></td><td>${money(T.p)}</td></tr></tfoot></table></div>
+${d.some(r=>r.open)?'<p class="bad">⚠ Someone has an open shift (clocked in, never out). It is not counted. Delete it below or clock them out.</p>':''}
+<h3>Shift log</h3>`+(shifts.length?shifts.map(s=>`<div class="card emp"><div><b>${esc(s.e.name)}</b><br><span class="mut">${fT(s.i.t)} → ${s.o?fT(s.o.t):'still open'}</span></div>
+<div>${s.o?((s.o.t-s.i.t)/36e5).toFixed(2)+' h':''} <button class="s d noprint" onclick="delShift('${s.i.id}','${s.o?s.o.id:''}')">Delete</button></div></div>`).join(''):'<p class="mut">No shop shifts this month.</p>');
+}
+function delShift(a,b){if(!confirm('Delete this shift?'))return;S.punches=S.punches.filter(p=>p.id!==a&&p.id!==b);save();render()}
+function tSet(){
+  return `<div class="card"><label for="np">New PIN</label><input id="np" type="password" inputmode="numeric"><button class="p" style="margin-top:8px" onclick="setPin()">Change PIN</button>
+<label for="cs">Currency symbol</label><input id="cs" value="${esc(S.cur)}" maxlength="4" onchange="S.cur=this.value||'₹';save()"></div>
+<div class="card"><b>Backup</b><p class="mut">Data lives only on this phone. Download a backup regularly.</p>
+<button onclick="exp()">Download backup</button> <label style="display:inline">Restore <input type="file" accept=".json" onchange="imp(this.files[0])"></label></div>
+<button class="d" onclick="authed=false;go('home')">Lock owner section</button>`;
+}
+function setPin(){const p=$('#np').value;if(p.length<4)return alert('Use at least 4 digits.');S.pin=p;save();alert('PIN changed.')}
+function exp(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download='shopclock-backup-'+today()+'.json';a.click()}
+function imp(f){if(!f)return;f.text().then(t=>{try{const d=JSON.parse(t);if(!d.emps||!d.punches)throw 0;if(confirm('Replace all current data with this backup?')){S=d;save();render()}}catch{alert('Not a valid backup file.')}})}
+
+render();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script></body></html>
