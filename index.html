@@ -33,6 +33,8 @@ label{display:block;font-size:.85rem;color:var(--mut);margin:10px 0 4px}
 .sc{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.92rem}
 th,td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--bd);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}tfoot td{font-weight:700;border-top:2px solid var(--tx)}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}.cal div{text-align:center;padding:6px 0;border-radius:6px;border:1px solid var(--bd);font-size:.8rem}.cal .h{border:0;color:var(--mut)}.cal small{display:block;font-weight:700}
+.cP{background:rgba(6,118,71,.22)}.cO{background:rgba(242,183,5,.3)}.cA{background:rgba(180,35,24,.22)}.cN{color:var(--mut)}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--ok);margin-right:6px}
 @media print{header,.tabs,.noprint{display:none}body{background:#fff;color:#000}}
 </style></head><body>
@@ -41,6 +43,7 @@ th:first-child,td:first-child{text-align:left}tfoot td{font-weight:700;border-to
 <script>
 const $=s=>document.querySelector(s),K='shopclock_v1';
 let S=JSON.parse(localStorage.getItem(K)||'null')||{pin:'1234',cur:'₹',emps:[],punches:[],extra:[]};
+if(!S.offDays)S.offDays=[0];
 const save=()=>localStorage.setItem(K,JSON.stringify(S));
 const uid=()=>Math.random().toString(36).slice(2,10);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -48,7 +51,7 @@ const money=n=>S.cur+n.toLocaleString(undefined,{minimumFractionDigits:2,maximum
 const fT=t=>new Date(t).toLocaleString([],{dateStyle:'medium',timeStyle:'short'});
 const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
 const mk=t=>{const d=new Date(t);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')};
-let view='home',tab='emps',month=today().slice(0,7),authed=false,ac=null;
+let view='home',tab='emps',month=today().slice(0,7),authed=false,ac=null,repId=null;
 
 // ---- NFC ----
 const stopScan=()=>{if(ac){ac.abort();ac=null}};
@@ -156,12 +159,14 @@ function addEmp(){
   const name=$('#en').value.trim(),rate=parseFloat($('#er').value),tag=$('#et').value.trim().toUpperCase();
   if(!name||isNaN(rate)||rate<0)return nmsg('Enter a name and a valid hourly pay.','bad');
   if(tag&&S.emps.some(e=>e.tag===tag))return nmsg('That tag already belongs to another employee.','bad');
-  S.emps.push({id:uid(),name,rate,tag});save();render();
+  S.emps.push({id:uid(),name,rate,tag,since:today()});save();render();
 }
 function editEmp(id){
   const e=S.emps.find(x=>x.id===id);
   const n=prompt('Name',e.name);if(n===null)return;
   const r=prompt('Pay per hour',e.rate);if(r===null)return;
+  const sd=prompt('Attendance start date (YYYY-MM-DD)',e.since||'');if(sd===null)return;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(sd))e.since=sd;
   if(n.trim())e.name=n.trim();if(!isNaN(parseFloat(r)))e.rate=parseFloat(r);save();render();
 }
 async function rescan(id){
@@ -202,13 +207,46 @@ function tPay(){
 ${d.map(r=>`<tr><td>${esc(r.e.name)}${r.open?' <span class="bad" title="Open shift not counted">⚠</span>':''}</td><td>${r.shop.toFixed(2)}</td><td>${r.off.toFixed(2)}</td><td>${r.total.toFixed(2)}</td><td>${money(r.e.rate)}</td><td><b>${money(r.pay)}</b></td></tr>`).join('')||'<tr><td colspan="6" class="mut">No employees yet.</td></tr>'}
 </tbody><tfoot><tr><td>Total</td><td></td><td></td><td>${T.h.toFixed(2)}</td><td></td><td>${money(T.p)}</td></tr></tfoot></table></div>
 ${d.some(r=>r.open)?'<p class="bad">⚠ Someone has an open shift (clocked in, never out). It is not counted. Delete it below or clock them out.</p>':''}
-<h3>Shift log</h3>`+(shifts.length?shifts.map(s=>`<div class="card emp"><div><b>${esc(s.e.name)}</b><br><span class="mut">${fT(s.i.t)} → ${s.o?fT(s.o.t):'still open'}</span></div>
+${attBlock()}<h3>Shift log</h3>`+(shifts.length?shifts.map(s=>`<div class="card emp"><div><b>${esc(s.e.name)}</b><br><span class="mut">${fT(s.i.t)} → ${s.o?fT(s.o.t):'still open'}</span></div>
 <div>${s.o?((s.o.t-s.i.t)/36e5).toFixed(2)+' h':''} <button class="s d noprint" onclick="delShift('${s.i.id}','${s.o?s.o.id:''}')">Delete</button></div></div>`).join(''):'<p class="mut">No shop shifts this month.</p>');
 }
+function attend(e,ym){
+  const [y,m]=ym.split('-').map(Number),n=new Date(y,m,0).getDate(),td=today(),pad=x=>String(x).padStart(2,'0');
+  const shop=new Set(),off=new Set();
+  sessions(e.id).forEach(x=>{if(mk(x.i.t)===ym)shop.add(new Date(x.i.t).getDate())});
+  S.extra.filter(x=>x.emp===e.id&&x.date.slice(0,7)===ym).forEach(x=>off.add(+x.date.slice(8)));
+  const days=[];let p=0,o=0,a=0;
+  for(let d=1;d<=n;d++){
+    const ds=ym+'-'+pad(d);let st;
+    if(shop.has(d)){st='P';p++}else if(off.has(d)){st='O';o++}
+    else if(ds>td||(e.since&&ds<e.since)||S.offDays.includes(new Date(y,m-1,d).getDay()))st='N';
+    else{st='A';a++}
+    days.push(st);
+  }
+  return{days,p,o,a,y,m};
+}
+function attBlock(){
+  if(!S.emps.length)return '';
+  const A=S.emps.map(e=>({e,a:attend(e,month)}));
+  let h=`<h3>Attendance for ${month}</h3><div class="card sc"><table><thead><tr><th>Employee</th><th>Shop days</th><th>Off-site days</th><th>Absent</th><th></th></tr></thead><tbody>`+
+  A.map(({e,a})=>`<tr><td>${esc(e.name)}</td><td>${a.p}</td><td>${a.o}</td><td class="${a.a?'bad':''}"><b>${a.a}</b></td><td><button class="s noprint" onclick="repId='${e.id}';render()">Day view</button></td></tr>`).join('')+
+  `</tbody></table></div><p class="mut">Absent means a working day with no clock-in and no off-site hours. Weekly off days, days before the start date and future days are not counted.</p>`;
+  const sel=A.find(x=>x.e.id===repId);
+  if(sel){
+    const a=sel.a,lead=new Date(a.y,a.m-1,1).getDay(),L={P:'Shop',O:'Off-site',A:'Absent',N:'–'};
+    h+=`<div class="card"><b>${esc(sel.e.name)}: ${month}</b> <button class="s noprint" onclick="repId=null;render()">Close</button><div class="cal" style="margin-top:10px">`+
+    ['S','M','T','W','T','F','S'].map(x=>`<div class="h">${x}</div>`).join('')+'<span></span>'.repeat(lead)+
+    a.days.map((st,i)=>`<div class="c${st}">${i+1}<small>${L[st]}</small></div>`).join('')+
+    `</div><p class="mut">Present ${a.p+a.o} days (${a.p} in shop, ${a.o} off-site only), absent ${a.a} days.</p></div>`;
+  }
+  return h;
+}
+function togOff(i,on){S.offDays=on?[...new Set([...S.offDays,i])]:S.offDays.filter(x=>x!==i);save()}
 function delShift(a,b){if(!confirm('Delete this shift?'))return;S.punches=S.punches.filter(p=>p.id!==a&&p.id!==b);save();render()}
 function tSet(){
   return `<div class="card"><label for="np">New PIN</label><input id="np" type="password" inputmode="numeric"><button class="p" style="margin-top:8px" onclick="setPin()">Change PIN</button>
 <label for="cs">Currency symbol</label><input id="cs" value="${esc(S.cur)}" maxlength="4" onchange="S.cur=this.value||'₹';save()"></div>
+<div class="card"><b>Weekly off days</b><p class="mut">These days are not counted as absent.</p>${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((n,i)=>`<label style="display:inline-block;margin-right:12px"><input type="checkbox" style="width:auto" ${S.offDays.includes(i)?'checked':''} onchange="togOff(${i},this.checked)"> ${n}</label>`).join('')}</div>
 <div class="card"><b>Backup</b><p class="mut">Data lives only on this phone. Download a backup regularly.</p>
 <button onclick="exp()">Download backup</button> <label style="display:inline">Restore <input type="file" accept=".json" onchange="imp(this.files[0])"></label></div>
 <button class="d" onclick="authed=false;go('home')">Lock owner section</button>`;
